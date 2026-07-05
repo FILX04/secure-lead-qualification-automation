@@ -1,0 +1,495 @@
+{
+  "name": "Secure Lead Qualification Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-intake",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "165a4cbb-6934-4711-becc-43544cb42a24",
+      "name": "Webhook",
+      "webhookId": "ee5feb55-b07c-44d2-87e2-0e46368f7d6f"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nreturn items.map(item => {\n  const body = item.json.body;\n\n  // Keep original values in a separate, clearly-labeled field\n  // (this simulates what would normally be encrypted/access-controlled)\n  const originalPhone = body.phone;\n  const originalEmail = body.email;\n\n  // Simple masking function\n  function maskPhone(phone) {\n    if (!phone) return '';\n    return phone.slice(0, 4) + '****' + phone.slice(-2);\n  }\n\n  function maskEmail(email) {\n    if (!email) return '';\n    const [user, domain] = email.split('@');\n    return user.slice(0, 2) + '***@' + domain;\n  }\n\n  return {\n    json: {\n      name: body.name,\n      message: body.message,\n      maskedPhone: maskPhone(originalPhone),\n      maskedEmail: maskEmail(originalEmail),\n      // Original values kept separately - only used later for the CRM step,\n      // never passed to the AI node\n      _rawPhone: originalPhone,\n      _rawEmail: originalEmail\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        0
+      ],
+      "id": "f9799b12-d5d9-453a-bd72-b6bb10522aa9",
+      "name": "Mask PII"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"anthropic/claude-haiku-4.5\",\n  \"max_tokens\": 100,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a lead qualification assistant. Given a lead's name and message, classify the lead status as one of: Hot, Warm, Cold. Also extract the intent in 2-4 words (e.g. 'pricing inquiry', 'demo request', 'spam'). Respond ONLY in this exact JSON format with no other text: {\\\"status\\\": \\\"Hot|Warm|Cold\\\", \\\"intent\\\": \\\"short phrase\\\"}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Name: {{ $json.name }}\\nMessage: {{ $json.message }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        416,
+        0
+      ],
+      "id": "b9f161f5-12d5-40de-b542-4aac450daece",
+      "name": "AI Lead Qualification",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "F4kcxULu9nIaTwAI",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst previousData = $('Mask PII').all(); // pulls masked/raw fields back in\n\nreturn items.map((item, index) => {\n  let rawContent = item.json.choices[0].message.content;\n\n  // Strip markdown code fences if present\n  rawContent = rawContent.replace(/```json\\n?|\\n?```/g, '').trim();\n\n  let parsed;\n  try {\n    parsed = JSON.parse(rawContent);\n  } catch (e) {\n    parsed = { status: 'Warm', intent: 'unclear - needs manual review' };\n  }\n\n  const original = previousData[index].json;\n\n  return {\n    json: {\n      name: original.name,\n      message: original.message,\n      maskedPhone: original.maskedPhone,\n      maskedEmail: original.maskedEmail,\n      _rawPhone: original._rawPhone,\n      _rawEmail: original._rawEmail,\n      status: parsed.status,\n      intent: parsed.intent\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        0
+      ],
+      "id": "15589deb-3c0f-40e5-980d-0aa2df8e2326",
+      "name": "Parse Classification"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d0712ea3-529a-41ae-ad90-1f0efba55d79",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "Cold",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        832,
+        0
+      ],
+      "id": "c045c1af-afa0-4c6f-9515-e07c58617e1d",
+      "name": "Is Qualified Lead?"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "https://airtable.com/appMi8i32Y6lBYW6D/tbldVkdYoVDdn2CiK/viwdUfoHR8S2gPa1X?blocks=hide",
+          "mode": "url"
+        },
+        "table": {
+          "__rl": true,
+          "value": "https://airtable.com/appMi8i32Y6lBYW6D/tbldVkdYoVDdn2CiK/viwdUfoHR8S2gPa1X?blocks=hide",
+          "mode": "url"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.name }}",
+            "Phone": "={{ $json._rawPhone }}",
+            "Mail": "={{ $json._rawEmail }}",
+            "Inquiry": "={{ $json.message }}",
+            "Intent": "={{ $json.intent }}",
+            "Lead Status": "={{ $json.status }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Mail",
+              "displayName": "Mail",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Inquiry",
+              "displayName": "Inquiry",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Lead Status",
+              "displayName": "Lead Status",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Hot",
+                  "value": "Hot"
+                },
+                {
+                  "name": "Cold",
+                  "value": "Cold"
+                },
+                {
+                  "name": "Warm",
+                  "value": "Warm"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Intent",
+              "displayName": "Intent",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [
+        1040,
+        -96
+      ],
+      "id": "be1db89d-86ce-44e5-8fae-3343c857712e",
+      "name": "Log to CRM",
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "JmAvHBNo59QvMd0l",
+          "name": "Airtable Personal Access Token account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "https://app.slack.com/client/T0BFHRUUXUG/C0BG273HG9W",
+          "mode": "url"
+        },
+        "text": "=🔥 New Qualified Lead — {{ $json.status }}  Name: {{ $json.name }} Intent: {{ $json.intent }} Contact: {{ $json.maskedPhone }} | {{ $json.maskedEmail }}  Full details logged in CRM →",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.5,
+      "position": [
+        1024,
+        -224
+      ],
+      "id": "1567b0a6-2df7-4b08-8c15-cb4db9eeecf4",
+      "name": "Notify Team",
+      "webhookId": "6c00e60f-b84a-45a0-a57d-e2914d4c0ddd",
+      "credentials": {
+        "slackApi": {
+          "id": "oPSgXevUGN57urgA",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "appMi8i32Y6lBYW6D",
+          "mode": "list",
+          "cachedResultName": "Lead CRM",
+          "cachedResultUrl": "https://airtable.com/appMi8i32Y6lBYW6D"
+        },
+        "table": {
+          "__rl": true,
+          "value": "tbldVkdYoVDdn2CiK",
+          "mode": "list",
+          "cachedResultName": "Leads",
+          "cachedResultUrl": "https://airtable.com/appMi8i32Y6lBYW6D/tbldVkdYoVDdn2CiK"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.name }}",
+            "Phone": "={{ $json._rawPhone }} ",
+            "Mail": "={{ $json._rawEmail }}",
+            "Inquiry": "={{ $json.message }}",
+            "Lead Status": "={{ $json.status }}",
+            "Intent": "= {{ $json.intent }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Mail",
+              "displayName": "Mail",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Inquiry",
+              "displayName": "Inquiry",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Lead Status",
+              "displayName": "Lead Status",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Hot",
+                  "value": "Hot"
+                },
+                {
+                  "name": "Cold",
+                  "value": "Cold"
+                },
+                {
+                  "name": "Warm",
+                  "value": "Warm"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Intent",
+              "displayName": "Intent",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [
+        1040,
+        96
+      ],
+      "id": "20b378eb-ed12-46c6-b4bb-7700afa49917",
+      "name": "Log Cold Lead",
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "JmAvHBNo59QvMd0l",
+          "name": "Airtable Personal Access Token account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Mask PII",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mask PII": {
+      "main": [
+        [
+          {
+            "node": "AI Lead Qualification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Lead Qualification": {
+      "main": [
+        [
+          {
+            "node": "Parse Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Classification": {
+      "main": [
+        [
+          {
+            "node": "Is Qualified Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Qualified Lead?": {
+      "main": [
+        [
+          {
+            "node": "Log to CRM",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notify Team",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Cold Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "38c7917f-fe6b-4beb-a88d-d01240c3e34d",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "e16dff05fb0ce31a3860adb4e1f5fea46d1f6f76c1aeeee40e1b97ebbb103bdb"
+  },
+  "nodeGroups": [],
+  "id": "My0aUpmSwsOUeLA6",
+  "tags": []
+}
